@@ -130,7 +130,7 @@ AVAILABLE_CLI_OPTIONS = {
     ),
     "strategy_list": Arg(
         '--strategy-list',
-        help='Provide a comma-separated list of strategies to backtest. '
+        help='Provide a space-separated list of strategies to backtest. '
         'Please note that ticker-interval needs to be set either in config '
         'or via command line. When using this together with `--export trades`, '
         'the strategy-name is injected into the filename '
@@ -191,6 +191,13 @@ AVAILABLE_CLI_OPTIONS = {
         action='store_true',
         default=False,
     ),
+    "print_colorized": Arg(
+        '--no-color',
+        help='Disable colorization of hyperopt results. May be useful if you are '
+        'redirecting output to a file.',
+        action='store_false',
+        default=True,
+    ),
     "hyperopt_jobs": Arg(
         '-j', '--job-workers',
         help='The number of concurrently running jobs for hyperoptimization '
@@ -226,7 +233,9 @@ AVAILABLE_CLI_OPTIONS = {
         '--hyperopt-loss',
         help='Specify the class name of the hyperopt loss function class (IHyperOptLoss). '
         'Different functions can generate completely different results, '
-        'since the target for optimization is different. (default: `%(default)s`).',
+        'since the target for optimization is different. Built-in Hyperopt-loss-functions are: '
+        'DefaultHyperOptLoss, OnlyProfitHyperOptLoss, SharpeHyperOptLoss.'
+        '(default: `%(default)s`).',
         metavar='NAME',
         default=constants.DEFAULT_HYPEROPT_LOSS,
     ),

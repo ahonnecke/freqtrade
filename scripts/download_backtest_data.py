@@ -12,6 +12,7 @@ from freqtrade.configuration import Arguments, TimeRange
 from freqtrade.configuration import Configuration
 from freqtrade.configuration.arguments import ARGS_DOWNLOADER
 from freqtrade.configuration.check_exchange import check_exchange
+from freqtrade.configuration.load_config import load_config_file
 from freqtrade.data.history import download_pair_history
 from freqtrade.exchange import Exchange
 from freqtrade.misc import deep_merge_dicts
@@ -42,7 +43,7 @@ if args.config:
     for path in args.config:
         logger.info(f"Using config: {path}...")
         # Merge config options, overwriting old values
-        config = deep_merge_dicts(configuration._load_config_file(path), config)
+        config = deep_merge_dicts(load_config_file(path), config)
 
     config['stake_currency'] = ''
     # Ensure we do not use Exchange credentials
@@ -104,7 +105,7 @@ if not pairs or args.pairs_file:
 timerange = TimeRange()
 if args.days:
     time_since = arrow.utcnow().shift(days=-args.days).strftime("%Y%m%d")
-    timerange = arguments.parse_timerange(f'{time_since}-')
+    timerange = TimeRange.parse_timerange(f'{time_since}-')
 
 logger.info(f'About to download pairs: {pairs}, intervals: {timeframes} to {dl_path}')
 

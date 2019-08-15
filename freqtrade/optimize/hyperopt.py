@@ -11,14 +11,16 @@ import sys
 from operator import itemgetter
 from pathlib import Path
 from pprint import pprint
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
+from colorama import init as colorama_init
+from colorama import Fore, Style
 from joblib import Parallel, delayed, dump, load, wrap_non_picklable_objects, cpu_count
 from pandas import DataFrame
 from skopt import Optimizer
 from skopt.space import Dimension
 
-from freqtrade.configuration import Arguments
+from freqtrade.configuration import TimeRange
 from freqtrade.data.history import load_data, get_timeframe
 from freqtrade.optimize.backtesting import Backtesting
 # Import IHyperOptLoss to allow users import from this file
@@ -51,7 +53,7 @@ class Hyperopt(Backtesting):
         self.custom_hyperoptloss = HyperOptLossResolver(self.config).hyperoptloss
         self.calculate_loss = self.custom_hyperoptloss.hyperopt_loss_function
 
-        self.total_tries = config.get('epochs', 0)
+        self.total_epochs = config.get('epochs', 0)
         self.current_best_loss = 100
 
         if not self.config.get('hyperopt_continue'):
@@ -70,13 +72,19 @@ class Hyperopt(Backtesting):
         if hasattr(self.custom_hyperopt, 'populate_sell_trend'):
             self.advise_sell = self.custom_hyperopt.populate_sell_trend  # type: ignore
 
-            # Use max_open_trades for hyperopt as well, except --disable-max-market-positions is set
+        # Use max_open_trades for hyperopt as well, except --disable-max-market-positions is set
         if self.config.get('use_max_market_positions', True):
             self.max_open_trades = self.config['max_open_trades']
         else:
             logger.debug('Ignoring max_open_trades (--disable-max-market-positions was used) ...')
             self.max_open_trades = 0
         self.position_stacking = self.config.get('position_stacking', False),
+
+        if self.has_space('sell'):
+            # Make sure experimental is enabled
+            if 'experimental' not in self.config:
+                self.config['experimental'] = {}
+            self.config['experimental']['use_sell_signal'] = True
 
     def clean_hyperopt(self):
         """
@@ -124,61 +132,83 @@ class Hyperopt(Backtesting):
         """
         results = sorted(self.trials, key=itemgetter('loss'))
         best_result = results[0]
-        logger.info(
-            'Best result:\n%s\nwith values:\n',
-            best_result['result']
-        )
-        pprint(best_result['params'], indent=4)
-        if 'roi_t1' in best_result['params']:
-            logger.info('ROI table:')
-            pprint(self.custom_hyperopt.generate_roi_table(best_result['params']), indent=4)
+        params = best_result['params']
+
+        log_str = self.format_results_logstring(best_result)
+        print(f"\nBest result:\n\n{log_str}\n")
+        if self.has_space('buy'):
+            print('Buy hyperspace params:')
+            pprint({p.name: params.get(p.name) for p in self.hyperopt_space('buy')},
+                   indent=4)
+        if self.has_space('sell'):
+            print('Sell hyperspace params:')
+            pprint({p.name: params.get(p.name) for p in self.hyperopt_space('sell')},
+                   indent=4)
+        if self.has_space('roi'):
+            print("ROI table:")
+            pprint(self.custom_hyperopt.generate_roi_table(params), indent=4)
+        if self.has_space('stoploss'):
+            print(f"Stoploss: {params.get('stoploss')}")
 
     def log_results(self, results) -> None:
         """
         Log results if it is better than any previous evaluation
         """
         print_all = self.config.get('print_all', False)
-        if print_all or results['loss'] < self.current_best_loss:
-            # Output human-friendly index here (starting from 1)
-            current = results['current_tries'] + 1
-            total = results['total_tries']
-            res = results['result']
-            loss = results['loss']
-            self.current_best_loss = results['loss']
-            log_msg = f'{current:5d}/{total}: {res} Objective: {loss:.5f}'
-            log_msg = f'*{log_msg}' if results['initial_point'] else f' {log_msg}'
+        is_best_loss = results['loss'] < self.current_best_loss
+        if print_all or is_best_loss:
+            if is_best_loss:
+                self.current_best_loss = results['loss']
+            log_str = self.format_results_logstring(results)
+            # Colorize output
+            if self.config.get('print_colorized', False):
+                if results['total_profit'] > 0:
+                    log_str = Fore.GREEN + log_str
+                if print_all and is_best_loss:
+                    log_str = Style.BRIGHT + log_str
             if print_all:
-                print(log_msg)
+                print(log_str)
             else:
-                print('\n' + log_msg)
+                print('\n' + log_str)
         else:
             print('.', end='')
             sys.stdout.flush()
+
+    def format_results_logstring(self, results) -> str:
+        # Output human-friendly index here (starting from 1)
+        current = results['current_epoch'] + 1
+        total = self.total_epochs
+        res = results['results_explanation']
+        loss = results['loss']
+        log_str = f'{current:5d}/{total}: {res} Objective: {loss:.5f}'
+        log_str = f'*{log_str}' if results['is_initial_point'] else f' {log_str}'
+        return log_str
 
     def has_space(self, space: str) -> bool:
         """
         Tell if a space value is contained in the configuration
         """
-        if space in self.config['spaces'] or 'all' in self.config['spaces']:
-            return True
-        return False
+        return any(s in self.config['spaces'] for s in [space, 'all'])
 
-    def hyperopt_space(self) -> List[Dimension]:
+    def hyperopt_space(self, space: Optional[str] = None) -> List[Dimension]:
         """
-        Return the space to use during Hyperopt
+        Return the dimensions in the hyperoptimization space.
+        :param space: Defines hyperspace to return dimensions for.
+        If None, then the self.has_space() will be used to return dimensions
+        for all hyperspaces used.
         """
         spaces: List[Dimension] = []
-        if self.has_space('buy'):
+        if space == 'buy' or (space is None and self.has_space('buy')):
+            logger.debug("Hyperopt has 'buy' space")
             spaces += self.custom_hyperopt.indicator_space()
-        if self.has_space('sell'):
+        if space == 'sell' or (space is None and self.has_space('sell')):
+            logger.debug("Hyperopt has 'sell' space")
             spaces += self.custom_hyperopt.sell_indicator_space()
-            # Make sure experimental is enabled
-            if 'experimental' not in self.config:
-                self.config['experimental'] = {}
-            self.config['experimental']['use_sell_signal'] = True
-        if self.has_space('roi'):
+        if space == 'roi' or (space is None and self.has_space('roi')):
+            logger.debug("Hyperopt has 'roi' space")
             spaces += self.custom_hyperopt.roi_space()
-        if self.has_space('stoploss'):
+        if space == 'stoploss' or (space is None and self.has_space('stoploss')):
+            logger.debug("Hyperopt has 'stoploss' space")
             spaces += self.custom_hyperopt.stoploss_space()
         return spaces
 
@@ -214,9 +244,10 @@ class Hyperopt(Backtesting):
                 'end_date': max_date,
             }
         )
-        result_explanation = self.format_results(results)
+        results_explanation = self.format_results(results)
 
         trade_count = len(results.index)
+        total_profit = results.profit_abs.sum()
 
         # If this evaluation contains too short amount of trades to be
         # interesting -- consider it as 'bad' (assigned max. loss value)
@@ -226,7 +257,8 @@ class Hyperopt(Backtesting):
             return {
                 'loss': MAX_LOSS,
                 'params': params,
-                'result': result_explanation,
+                'results_explanation': results_explanation,
+                'total_profit': total_profit,
             }
 
         loss = self.calculate_loss(results=results, trade_count=trade_count,
@@ -235,12 +267,13 @@ class Hyperopt(Backtesting):
         return {
             'loss': loss,
             'params': params,
-            'result': result_explanation,
+            'results_explanation': results_explanation,
+            'total_profit': total_profit,
         }
 
     def format_results(self, results: DataFrame) -> str:
         """
-        Return the format result in a string
+        Return the formatted results explanation in a string
         """
         trades = len(results.index)
         avg_profit = results.profit_percent.mean() * 100.0
@@ -277,7 +310,7 @@ class Hyperopt(Backtesting):
             )
 
     def start(self) -> None:
-        timerange = Arguments.parse_timerange(None if self.config.get(
+        timerange = TimeRange.parse_timerange(None if self.config.get(
             'timerange') is None else str(self.config.get('timerange')))
         data = load_data(
             datadir=Path(self.config['datadir']) if self.config.get('datadir') else None,
@@ -319,29 +352,27 @@ class Hyperopt(Backtesting):
         logger.info(f'Number of parallel jobs set as: {config_jobs}')
 
         opt = self.get_optimizer(config_jobs)
+
+        if self.config.get('print_colorized', False):
+            colorama_init(autoreset=True)
+
         try:
             with Parallel(n_jobs=config_jobs) as parallel:
                 jobs = parallel._effective_n_jobs()
                 logger.info(f'Effective number of parallel workers used: {jobs}')
-                EVALS = max(self.total_tries // jobs, 1)
+                EVALS = max(self.total_epochs // jobs, 1)
                 for i in range(EVALS):
                     asked = opt.ask(n_points=jobs)
                     f_val = self.run_optimizer_parallel(parallel, asked)
-                    opt.tell(asked, [i['loss'] for i in f_val])
-
-                    self.trials += f_val
+                    opt.tell(asked, [v['loss'] for v in f_val])
                     for j in range(jobs):
                         current = i * jobs + j
-                        self.log_results({
-                            'loss': f_val[j]['loss'],
-                            'current_tries': current,
-                            'initial_point': current < INITIAL_POINTS,
-                            'total_tries': self.total_tries,
-                            'result': f_val[j]['result'],
-                        })
-                        logger.debug(f"Optimizer params: {f_val[j]['params']}")
-                    for j in range(jobs):
-                        logger.debug(f"Optimizer state: Xi: {opt.Xi[-j-1]}, yi: {opt.yi[-j-1]}")
+                        val = f_val[j]
+                        val['current_epoch'] = current
+                        val['is_initial_point'] = current < INITIAL_POINTS
+                        self.log_results(val)
+                        self.trials.append(val)
+                        logger.debug(f"Optimizer epoch evaluated: {val}")
         except KeyboardInterrupt:
             print('User interrupted..')
 

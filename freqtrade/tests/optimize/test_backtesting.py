@@ -9,7 +9,7 @@ import pandas as pd
 import pytest
 from arrow import Arrow
 
-from freqtrade import DependencyException, constants
+from freqtrade import DependencyException, OperationalException, constants
 from freqtrade.configuration import TimeRange
 from freqtrade.data import history
 from freqtrade.data.btanalysis import evaluate_result_multi
@@ -21,7 +21,8 @@ from freqtrade.optimize.backtesting import Backtesting
 from freqtrade.state import RunMode
 from freqtrade.strategy.default_strategy import DefaultStrategy
 from freqtrade.strategy.interface import SellType
-from freqtrade.tests.conftest import (get_args, log_has, log_has_re, patch_exchange,
+from freqtrade.tests.conftest import (get_args, log_has, log_has_re,
+                                      patch_exchange,
                                       patched_configuration_load_config_file)
 
 
@@ -180,21 +181,18 @@ def test_setup_configuration_without_arguments(mocker, default_conf, caplog) -> 
     assert 'exchange' in config
     assert 'pair_whitelist' in config['exchange']
     assert 'datadir' in config
-    assert log_has(
-        'Using data directory: {} ...'.format(config['datadir']),
-        caplog.record_tuples
-    )
+    assert log_has('Using data directory: {} ...'.format(config['datadir']), caplog)
     assert 'ticker_interval' in config
-    assert not log_has_re('Parameter -i/--ticker-interval detected .*', caplog.record_tuples)
+    assert not log_has_re('Parameter -i/--ticker-interval detected .*', caplog)
 
     assert 'live' not in config
-    assert not log_has('Parameter -l/--live detected ...', caplog.record_tuples)
+    assert not log_has('Parameter -l/--live detected ...', caplog)
 
     assert 'position_stacking' not in config
-    assert not log_has('Parameter --enable-position-stacking detected ...', caplog.record_tuples)
+    assert not log_has('Parameter --enable-position-stacking detected ...', caplog)
 
     assert 'refresh_pairs' not in config
-    assert not log_has('Parameter -r/--refresh-pairs-cached detected ...', caplog.record_tuples)
+    assert not log_has('Parameter -r/--refresh-pairs-cached detected ...', caplog)
 
     assert 'timerange' not in config
     assert 'export' not in config
@@ -202,6 +200,7 @@ def test_setup_configuration_without_arguments(mocker, default_conf, caplog) -> 
     assert config['runmode'] == RunMode.BACKTEST
 
 
+@pytest.mark.filterwarnings("ignore:DEPRECATED")
 def test_setup_bt_configuration_with_arguments(mocker, default_conf, caplog) -> None:
     patched_configuration_load_config_file(mocker, default_conf)
     mocker.patch(
@@ -233,43 +232,31 @@ def test_setup_bt_configuration_with_arguments(mocker, default_conf, caplog) -> 
     assert 'datadir' in config
     assert config['runmode'] == RunMode.BACKTEST
 
-    assert log_has(
-        'Using data directory: {} ...'.format(config['datadir']),
-        caplog.record_tuples
-    )
+    assert log_has('Using data directory: {} ...'.format(config['datadir']), caplog)
     assert 'ticker_interval' in config
     assert log_has('Parameter -i/--ticker-interval detected ... Using ticker_interval: 1m ...',
-                   caplog.record_tuples)
+                   caplog)
 
     assert 'live' in config
-    assert log_has('Parameter -l/--live detected ...', caplog.record_tuples)
+    assert log_has('Parameter -l/--live detected ...', caplog)
 
     assert 'position_stacking' in config
-    assert log_has('Parameter --enable-position-stacking detected ...', caplog.record_tuples)
+    assert log_has('Parameter --enable-position-stacking detected ...', caplog)
 
     assert 'use_max_market_positions' in config
-    assert log_has('Parameter --disable-max-market-positions detected ...', caplog.record_tuples)
-    assert log_has('max_open_trades set to unlimited ...', caplog.record_tuples)
+    assert log_has('Parameter --disable-max-market-positions detected ...', caplog)
+    assert log_has('max_open_trades set to unlimited ...', caplog)
 
     assert 'refresh_pairs' in config
-    assert log_has('Parameter -r/--refresh-pairs-cached detected ...', caplog.record_tuples)
+    assert log_has('Parameter -r/--refresh-pairs-cached detected ...', caplog)
 
     assert 'timerange' in config
-    assert log_has(
-        'Parameter --timerange detected: {} ...'.format(config['timerange']),
-        caplog.record_tuples
-    )
+    assert log_has('Parameter --timerange detected: {} ...'.format(config['timerange']), caplog)
 
     assert 'export' in config
-    assert log_has(
-        'Parameter --export detected: {} ...'.format(config['export']),
-        caplog.record_tuples
-    )
+    assert log_has('Parameter --export detected: {} ...'.format(config['export']), caplog)
     assert 'exportfilename' in config
-    assert log_has(
-        'Storing backtest results to {} ...'.format(config['exportfilename']),
-        caplog.record_tuples
-    )
+    assert log_has('Storing backtest results to {} ...'.format(config['exportfilename']), caplog)
 
 
 def test_setup_configuration_unlimited_stake_amount(mocker, default_conf, caplog) -> None:
@@ -301,10 +288,7 @@ def test_start(mocker, fee, default_conf, caplog) -> None:
     ]
     args = get_args(args)
     start_backtesting(args)
-    assert log_has(
-        'Starting freqtrade in Backtesting mode',
-        caplog.record_tuples
-    )
+    assert log_has('Starting freqtrade in Backtesting mode', caplog)
     assert start_mock.call_count == 1
 
 
@@ -342,6 +326,23 @@ def test_backtesting_init(mocker, default_conf, order_types) -> None:
     get_fee.assert_called()
     assert backtesting.fee == 0.5
     assert not backtesting.strategy.order_types["stoploss_on_exchange"]
+
+
+def test_backtesting_init_no_ticker_interval(mocker, default_conf, caplog) -> None:
+    """
+    Check that stoploss_on_exchange is set to False while backtesting
+    since backtesting assumes a perfect stoploss anyway.
+    """
+    patch_exchange(mocker)
+    del default_conf['ticker_interval']
+    default_conf['strategy_list'] = ['DefaultStrategy',
+                                     'TestStrategy']
+
+    mocker.patch('freqtrade.exchange.Exchange.get_fee', MagicMock(return_value=0.5))
+    with pytest.raises(OperationalException):
+        Backtesting(default_conf)
+    log_has("Ticker-interval needs to be set in either configuration "
+            "or as cli argument `--ticker-interval 5m`", caplog)
 
 
 def test_tickerdata_to_dataframe_bt(default_conf, mocker) -> None:
@@ -492,7 +493,7 @@ def test_backtesting_start(default_conf, mocker, caplog) -> None:
         'up to 2017-11-14T22:59:00+00:00 (0 days)..'
     ]
     for line in exists:
-        assert log_has(line, caplog.record_tuples)
+        assert log_has(line, caplog)
 
 
 def test_backtesting_start_no_data(default_conf, mocker, caplog) -> None:
@@ -520,7 +521,7 @@ def test_backtesting_start_no_data(default_conf, mocker, caplog) -> None:
     backtesting.start()
     # check the logs, that will contain the backtest result
 
-    assert log_has('No data found. Terminating.', caplog.record_tuples)
+    assert log_has('No data found. Terminating.', caplog)
 
 
 def test_backtest(default_conf, fee, mocker) -> None:
@@ -617,8 +618,9 @@ def test_processed(default_conf, mocker) -> None:
 
 
 def test_backtest_pricecontours(default_conf, fee, mocker) -> None:
+    # TODO: Evaluate usefullness of this, the patterns and buy-signls are unrealistic
     mocker.patch('freqtrade.exchange.Exchange.get_fee', fee)
-    tests = [['raise', 19], ['lower', 0], ['sine', 18]]
+    tests = [['raise', 19], ['lower', 0], ['sine', 35]]
     # We need to enable sell-signal - otherwise it sells on ROI!!
     default_conf['experimental'] = {"use_sell_signal": True}
 
@@ -812,6 +814,7 @@ def test_backtest_record(default_conf, fee, mocker):
         assert dur > 0
 
 
+@pytest.mark.filterwarnings("ignore:DEPRECATED")
 def test_backtest_start_live(default_conf, mocker, caplog):
     default_conf['exchange']['pair_whitelist'] = ['UNITTEST/BTC']
 
@@ -855,9 +858,10 @@ def test_backtest_start_live(default_conf, mocker, caplog):
     ]
 
     for line in exists:
-        assert log_has(line, caplog.record_tuples)
+        assert log_has(line, caplog)
 
 
+@pytest.mark.filterwarnings("ignore:DEPRECATED")
 def test_backtest_start_multi_strat(default_conf, mocker, caplog):
     default_conf['exchange']['pair_whitelist'] = ['UNITTEST/BTC']
 
@@ -914,4 +918,4 @@ def test_backtest_start_multi_strat(default_conf, mocker, caplog):
     ]
 
     for line in exists:
-        assert log_has(line, caplog.record_tuples)
+        assert log_has(line, caplog)
