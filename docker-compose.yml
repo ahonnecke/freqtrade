@@ -1,9 +1,8 @@
 ---
 version: '3'
 services:
-  freqtrade_develop:
-    build:
-      context: .
-      dockerfile: "./Dockerfile"
+  freqtrade:
+    image: freqtradeorg/freqtrade:master
     volumes:
-      - ".:/freqtrade"
+      - "./user_data:/freqtrade/user_data"
+      - "./config.json:/freqtrade/config.json"
