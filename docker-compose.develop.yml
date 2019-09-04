@@ -7,3 +7,28 @@ services:
       dockerfile: "./Dockerfile"
     volumes:
       - ".:/freqtrade"
+
+  db:
+    image: postgres
+
+  # fixtures:
+  #   build:
+  #     context: .
+  #     dockerfile: "./Dockerfile.develop"
+  #   volumes:
+  #     - ".:/freqtrade"
+  #   depends_on:
+  #     -
+  #   command:
+  #     ["./scripts/fixtures.sh"]
+
+
+  # pytest:
+  #   build:
+  #     context: .
+  #     dockerfile: "./Dockerfile.develop"
+  #   volumes:
+  #     - ".:/freqtrade"
+  #   command:
+  #     ["./scripts/pytest.sh"]
+
